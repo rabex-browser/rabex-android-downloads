@@ -1,0 +1,63 @@
+name: site-flip
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.361-beta)'
+        required: true
+      branch:
+        description: 'Target branch in rabex-website'
+        required: true
+        default: 'main'
+      bump_only:
+        description: 'Only bump siteVersion (rehearsal)'
+        required: false
+        default: 'false'
+permissions:
+  contents: read
+jobs:
+  flip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve inputs
+        id: in
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "branch=main" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "bump=${{ inputs.bump_only }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Fetch release
+        run: |
+          curl -sfL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.in.outputs.tag }}" \
+            -o /tmp/release.json
+          python3 -c "import json;d=json.load(open('/tmp/release.json'));print('release:',d['tag_name'],len(d['assets']),'assets')"
+      - name: Check out website repo
+        uses: actions/checkout@v4
+        with:
+          repository: rabex-browser/rabex-website
+          token: ${{ secrets.WEBSITE_TOKEN }}
+          ref: ${{ steps.in.outputs.branch }}
+      - name: Apply release to site (fail-closed)
+        run: |
+          cd public
+          if [ "${{ steps.in.outputs.bump }}" = "true" ]; then
+            python3 tools/release-flip.py /tmp/release.json --bump-site-version-only
+          else
+            python3 tools/release-flip.py /tmp/release.json
+          fi
+      - name: Commit and push
+        run: |
+          git config user.email "agent@rabex.in"
+          git config user.name "RABEX Publisher"
+          git add -A
+          if git diff --cached --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "site flip: ${{ steps.in.outputs.tag }} (auto)"
+          git push origin "${{ steps.in.outputs.branch }}"
